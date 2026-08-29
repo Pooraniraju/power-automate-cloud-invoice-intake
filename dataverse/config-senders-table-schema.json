@@ -1,0 +1,16 @@
+{
+  "tableName": "cr_configsenders",
+  "displayName": "Config: Senders",
+  "description": "Maps a sender domain to a routing profile. Onboarding a new vendor is a data row, not a flow change.",
+  "columns": [
+    { "name": "cr_senderdomain", "type": "Text", "maxLength": 200, "description": "e.g. acmesupplies.com" },
+    { "name": "cr_vendorname", "type": "Text", "maxLength": 200 },
+    { "name": "cr_department", "type": "Text", "maxLength": 100 },
+    { "name": "cr_defaultowner", "type": "Lookup", "targetTable": "systemuser", "description": "Who gets the Needs Review adaptive card for this sender." },
+    { "name": "cr_slahours", "type": "Whole Number", "description": "Expected turnaround for this vendor's documents." }
+  ],
+  "sampleRows": [
+    { "cr_senderdomain": "acmesupplies.com", "cr_vendorname": "Acme Supplies Ltd", "cr_department": "Procurement", "cr_slahours": 24 },
+    { "cr_senderdomain": "globallogistics.com", "cr_vendorname": "Global Logistics Inc", "cr_department": "Operations", "cr_slahours": 48 }
+  ]
+}
