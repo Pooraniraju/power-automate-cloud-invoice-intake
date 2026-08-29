@@ -1,0 +1,232 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "$connections": {
+      "defaultValue": {},
+      "type": "Object"
+    }
+  },
+  "triggers": {
+    "When_a_new_email_arrives_shared_mailbox": {
+      "type": "OpenApiConnection",
+      "inputs": {
+        "host": {
+          "connectionName": "shared_office365",
+          "operationId": "OnNewEmailV3",
+          "apiId": "/providers/Microsoft.PowerApps/apis/shared_office365"
+        },
+        "parameters": {
+          "mailboxAddress": "invoices@contoso.com",
+          "folderPath": "Inbox",
+          "includeAttachments": true
+        },
+        "recurrence": {
+          "frequency": "Minute",
+          "interval": 5
+        }
+      }
+    }
+  },
+  "actions": {
+    "Lookup_sender_routing_profile": {
+      "type": "OpenApiConnection",
+      "runAfter": {},
+      "inputs": {
+        "host": {
+          "connectionName": "shared_commondataserviceforapps",
+          "operationId": "ListRecords",
+          "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps"
+        },
+        "parameters": {
+          "entityName": "cr_configsenders",
+          "$filter": "cr_senderdomain eq '@{split(triggerOutputs()?['body/from'], '@')[1]}'",
+          "$top": 1
+        }
+      }
+    },
+    "Condition_Sender_recognized": {
+      "type": "If",
+      "runAfter": { "Lookup_sender_routing_profile": ["Succeeded"] },
+      "expression": {
+        "and": [{ "greater": ["@length(body('Lookup_sender_routing_profile')?['value'])", 0] }]
+      },
+      "actions": {
+        "Apply_to_each_attachment": {
+          "type": "Foreach",
+          "foreach": "@triggerOutputs()?['body/attachments']",
+          "actions": {
+            "Create_work_queue_item_New": {
+              "type": "OpenApiConnection",
+              "inputs": {
+                "host": {
+                  "connectionName": "shared_commondataserviceforapps",
+                  "operationId": "CreateRecord",
+                  "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps"
+                },
+                "parameters": {
+                  "entityName": "cr_invoiceworkqueueitems",
+                  "item/cr_sourceemailid": "@triggerOutputs()?['body/id']",
+                  "item/cr_vendorname": "@body('Lookup_sender_routing_profile')?['value'][0]?['cr_vendorname']",
+                  "item/cr_status": "New",
+                  "item/cr_retrycount": 0
+                }
+              }
+            },
+            "Switch_on_file_extension": {
+              "type": "Switch",
+              "runAfter": { "Create_work_queue_item_New": ["Succeeded"] },
+              "expression": "@toLower(last(split(items('Apply_to_each_attachment')?['name'], '.')))",
+              "cases": {
+                "Case_xlsx": {
+                  "case": "xlsx",
+                  "actions": {
+                    "List_rows_present_in_a_table": {
+                      "type": "OpenApiConnection",
+                      "inputs": {
+                        "host": {
+                          "connectionName": "shared_excelonlinebusiness",
+                          "operationId": "GetItems",
+                          "apiId": "/providers/Microsoft.PowerApps/apis/shared_excelonlinebusiness"
+                        },
+                        "parameters": {
+                          "source": "attachment",
+                          "table": "InvoiceLines"
+                        }
+                      }
+                    },
+                    "Update_work_queue_item_Excel_path": {
+                      "type": "OpenApiConnection",
+                      "runAfter": { "List_rows_present_in_a_table": ["Succeeded", "Failed"] },
+                      "inputs": {
+                        "host": {
+                          "connectionName": "shared_commondataserviceforapps",
+                          "operationId": "UpdateRecord",
+                          "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps"
+                        },
+                        "parameters": {
+                          "entityName": "cr_invoiceworkqueueitems",
+                          "recordId": "@outputs('Create_work_queue_item_New')?['body/cr_invoiceworkqueueitemid']",
+                          "item/cr_documenttype": "Excel",
+                          "item/cr_status": "@if(equals(outcomes('List_rows_present_in_a_table')?['status'], 'Succeeded'), 'Completed', 'Failed')"
+                        }
+                      }
+                    }
+                  }
+                },
+                "Case_pdf": {
+                  "case": "pdf",
+                  "actions": {
+                    "Predict_AI_Builder_Invoice_Processing": {
+                      "type": "OpenApiConnection",
+                      "inputs": {
+                        "host": {
+                          "connectionName": "shared_aibuilder",
+                          "operationId": "PredictInvoiceProcessing",
+                          "apiId": "/providers/Microsoft.PowerApps/apis/shared_aibuilder"
+                        },
+                        "parameters": {
+                          "documentContent": "@items('Apply_to_each_attachment')?['contentBytes']"
+                        }
+                      }
+                    },
+                    "Condition_Confidence_and_total_match": {
+                      "type": "If",
+                      "runAfter": { "Predict_AI_Builder_Invoice_Processing": ["Succeeded"] },
+                      "expression": {
+                        "and": [
+                          { "greaterOrEquals": ["@body('Predict_AI_Builder_Invoice_Processing')?['invoiceTotalConfidence']", 0.8] },
+                          { "equals": ["@body('Predict_AI_Builder_Invoice_Processing')?['lineItemsTotal']", "@body('Predict_AI_Builder_Invoice_Processing')?['invoiceTotal']"] }
+                        ]
+                      },
+                      "actions": {
+                        "Update_work_queue_item_PDF_completed": {
+                          "type": "OpenApiConnection",
+                          "inputs": {
+                            "host": {
+                              "connectionName": "shared_commondataserviceforapps",
+                              "operationId": "UpdateRecord",
+                              "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps"
+                            },
+                            "parameters": {
+                              "entityName": "cr_invoiceworkqueueitems",
+                              "recordId": "@outputs('Create_work_queue_item_New')?['body/cr_invoiceworkqueueitemid']",
+                              "item/cr_documenttype": "PDF",
+                              "item/cr_confidencescore": "@body('Predict_AI_Builder_Invoice_Processing')?['invoiceTotalConfidence']",
+                              "item/cr_status": "Completed"
+                            }
+                          }
+                        }
+                      },
+                      "else": {
+                        "actions": {
+                          "Update_work_queue_item_Needs_review": {
+                            "type": "OpenApiConnection",
+                            "inputs": {
+                              "host": {
+                                "connectionName": "shared_commondataserviceforapps",
+                                "operationId": "UpdateRecord",
+                                "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps"
+                              },
+                              "parameters": {
+                                "entityName": "cr_invoiceworkqueueitems",
+                                "recordId": "@outputs('Create_work_queue_item_New')?['body/cr_invoiceworkqueueitemid']",
+                                "item/cr_documenttype": "PDF",
+                                "item/cr_confidencescore": "@body('Predict_AI_Builder_Invoice_Processing')?['invoiceTotalConfidence']",
+                                "item/cr_status": "Needs Review"
+                              }
+                            }
+                          },
+                          "Post_adaptive_card_for_review": {
+                            "type": "OpenApiConnection",
+                            "runAfter": { "Update_work_queue_item_Needs_review": ["Succeeded"] },
+                            "inputs": {
+                              "host": {
+                                "connectionName": "shared_teams",
+                                "operationId": "PostCardAndWaitForResponse",
+                                "apiId": "/providers/Microsoft.PowerApps/apis/shared_teams"
+                              },
+                              "parameters": {
+                                "recipient": "@body('Lookup_sender_routing_profile')?['value'][0]?['cr_defaultowner']",
+                                "messageBody": "Low-confidence or mismatched invoice needs review."
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "default": {
+                "actions": {
+                  "Update_work_queue_item_Unsupported_type": {
+                    "type": "OpenApiConnection",
+                    "inputs": {
+                      "host": {
+                        "connectionName": "shared_commondataserviceforapps",
+                        "operationId": "UpdateRecord",
+                        "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps"
+                      },
+                      "parameters": {
+                        "entityName": "cr_invoiceworkqueueitems",
+                        "recordId": "@outputs('Create_work_queue_item_New')?['body/cr_invoiceworkqueueitemid']",
+                        "item/cr_status": "Failed"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "runtimeConfiguration": {
+            "concurrency": { "repetitions": 1 }
+          }
+        }
+      },
+      "else": {
+        "actions": {}
+      }
+    }
+  }
+}
