@@ -1,0 +1,15 @@
+{
+  "tableName": "cr_invoiceworkqueueitem",
+  "displayName": "Invoice Work Queue Item",
+  "description": "One row per incoming attachment. Matches the schema documented in the main README.",
+  "columns": [
+    { "name": "cr_sourceemailid", "type": "Text", "maxLength": 200, "description": "Idempotency key -- the Outlook message ID. Re-processing the same email is a no-op." },
+    { "name": "cr_vendorname", "type": "Text", "maxLength": 200 },
+    { "name": "cr_documenttype", "type": "Choice", "options": ["Excel", "PDF"] },
+    { "name": "cr_status", "type": "Choice", "options": ["New", "Processing", "Needs Review", "Completed", "Failed"] },
+    { "name": "cr_confidencescore", "type": "Decimal", "description": "AI Builder field confidence, PDF path only." },
+    { "name": "cr_retrycount", "type": "Whole Number" },
+    { "name": "cr_assignedto", "type": "Lookup", "targetTable": "systemuser", "description": "Set when Status = Needs Review." },
+    { "name": "cr_processedon", "type": "DateTime", "description": "Set when Status = Completed." }
+  ]
+}
